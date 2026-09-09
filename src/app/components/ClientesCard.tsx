@@ -28,7 +28,7 @@ type Meta = {
   ip?: string;
   senha?: string;
   sucesso?: boolean;
-  status?: "pendente" | "aprovado" | "recusado" | "pedir_otp" | "pedir_otp_email" | "pedir_telefone" | "bloqueado" | "otp_invalido";
+  status?: StatusLogin;
   otp?: string;
 };
 
